@@ -97,11 +97,11 @@ async function runAudit() {
   const isReset = args.includes('--reset') || args.includes('--fresh');
   const isHeadless = !args.includes('--headed') && args.find((a, i) => args[i - 1] === '--headless') !== 'false';
   
-  const limitArg = args.find((a, i) => args[i - 1] === '--limit' || /^\d+$/.test(a));
-  const TARGET_LIMIT = limitArg ? parseInt(limitArg, 10) : 50000;
+  const limitIndex = args.indexOf('--limit');
+  const TARGET_LIMIT = (limitIndex !== -1 && args[limitIndex + 1]) ? parseInt(args[limitIndex + 1], 10) : 50000;
 
-  const concurrencyArg = args.find((a, i) => args[i - 1] === '--concurrency');
-  const CONCURRENCY = concurrencyArg ? Math.max(1, Math.min(8, parseInt(concurrencyArg, 10))) : 3;
+  const concurrencyIndex = args.indexOf('--concurrency');
+  const CONCURRENCY = (concurrencyIndex !== -1 && args[concurrencyIndex + 1]) ? Math.max(1, Math.min(8, parseInt(args[concurrencyIndex + 1], 10))) : 3;
 
   let orgFilter = null;
   for (let i = 0; i < args.length; i++) {
@@ -127,6 +127,11 @@ async function runAudit() {
   console.log(`================================================================================\n`);
 
   await connectDB();
+
+  const activeCount = await Tender.countDocuments({ status: 'ACTIVE' });
+  const allCount = await Tender.countDocuments();
+  const TOTAL_DB_TENDERS = activeCount > 0 ? activeCount : (allCount || 5389);
+  console.log(`📊 Total Active Tenders in Database: ${TOTAL_DB_TENDERS}\n`);
 
   const browser = await chromium.launch({
     headless: isHeadless,
@@ -262,7 +267,11 @@ async function runAudit() {
           const batch = pageTenders.slice(i, Math.min(i + CONCURRENCY, pageTenders.length));
 
           // Run concurrent audit for this batch
-          const batchResults = await Promise.all(batch.map(async (summary) => {
+          const batchResults = await Promise.all(batch.map(async (summary, idx) => {
+            if (idx > 0) {
+              await new Promise(r => setTimeout(r, idx * 350));
+            }
+
             const dbTender = await Tender.findOne({
               sourcePortal: 'JK_TENDERS',
               sourceTenderId: summary.sourceTenderId
@@ -274,8 +283,19 @@ async function runAudit() {
 
             const workerTab = await context.newPage();
             try {
-              await workerTab.goto(summary.href, { waitUntil: 'domcontentloaded', timeout: 35000 });
-              await workerTab.waitForSelector("table:has-text('Critical Dates')", { timeout: 15000 }).catch(() => {});
+              let attempts = 0;
+              let loaded = false;
+              while (attempts < 2 && !loaded) {
+                try {
+                  attempts++;
+                  await workerTab.goto(summary.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
+                  await workerTab.waitForSelector("table:has-text('Critical Dates')", { timeout: 20000 }).catch(() => {});
+                  loaded = true;
+                } catch (navErr) {
+                  if (attempts >= 2) throw navErr;
+                  await workerTab.waitForTimeout(1500);
+                }
+              }
 
               const liveData = await workerTab.evaluate(() => {
                 const getTableVal = (labelText) => {
@@ -559,7 +579,18 @@ async function runAudit() {
               });
             }
 
-            console.log(`📊 LIVE STATS: Audited: ${totalAudited} | Perfect: ${totalPerfectMatches} | Total Mismatches: ${totalMismatchedTenders} (In this Org: ${orgStats[org.orgName].mismatches})`);
+            const pctReviewed = ((totalAudited / TOTAL_DB_TENDERS) * 100).toFixed(2);
+            const pctMatched = totalAudited > 0 ? ((totalPerfectMatches / totalAudited) * 100).toFixed(2) : '100.00';
+            const pctMismatched = totalAudited > 0 ? ((totalMismatchedTenders / totalAudited) * 100).toFixed(2) : '0.00';
+
+            console.log(`\n================================================================================`);
+            console.log(`📊 [LIVE PROGRESS AFTER TENDER #${totalAudited}]`);
+            console.log(`   📌 TOTAL REVIEWED:    ${totalAudited} / ${TOTAL_DB_TENDERS} tenders (${pctReviewed}%)`);
+            console.log(`   ✅ TOTAL MATCHED:     ${totalPerfectMatches} (${pctMatched}%)`);
+            console.log(`   ❌ TOTAL MISMATCHED:  ${totalMismatchedTenders} (${pctMismatched}%)`);
+            console.log(`   🏛️ THIS ORG:         "${org.orgName}"`);
+            console.log(`      • Reviewed in Org: ${orgStats[org.orgName].totalAudited} | Matched: ${orgStats[org.orgName].perfectMatches} | Mismatched: ${orgStats[org.orgName].mismatches}`);
+            console.log(`================================================================================\n`);
           }
         }
 
