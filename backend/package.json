@@ -25,7 +25,8 @@
     "manual:disaster": "node src/scripts/generateDisasterRecoveryPdf.js",
     "manual:deployment": "node src/scripts/generateDeploymentPdf.js",
     "manuals:all": "node src/scripts/generateDisasterRecoveryPdf.js && node src/scripts/generateDeploymentPdf.js",
-    "sync:mirror": "node src/scripts/syncR2Mirror.js"
+    "sync:mirror": "node src/scripts/syncR2Mirror.js",
+    "audit:live": "node src/scripts/auditAllTendersLive.js"
   },
   "keywords": [],
   "author": "",

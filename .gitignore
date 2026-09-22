@@ -24,3 +24,8 @@ yarn-error.log*
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Audit Reports & Checkpoints
+audit_reports/
+*.audit_checkpoint.json
+.metadata_sync_checkpoint.json
