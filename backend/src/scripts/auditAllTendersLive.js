@@ -159,6 +159,7 @@ async function runAudit() {
 
   const orgStats = checkpoint && checkpoint.orgStats ? checkpoint.orgStats : {};
   const allMismatchesList = checkpoint && checkpoint.allMismatchesList ? checkpoint.allMismatchesList : [];
+  const allNewNotInDbList = checkpoint && checkpoint.allNewNotInDbList ? checkpoint.allNewNotInDbList : [];
 
   let lastCheckpointState = null;
 
@@ -212,7 +213,9 @@ async function runAudit() {
           totalAudited: 0,
           perfectMatches: 0,
           mismatches: 0,
-          mismatchedTenders: []
+          mismatchedTenders: [],
+          newNotInDbCount: 0,
+          newNotInDbTenders: []
         };
       }
 
@@ -449,7 +452,25 @@ async function runAudit() {
           for (const res of batchResults) {
             if (res.notFound) {
               totalNotFoundInDb++;
-              console.log(`⏩ [Tender ID: ${res.summary.sourceTenderId}] Not found in MongoDB Atlas. Skipping.`);
+              orgStats[org.orgName].newNotInDbCount = (orgStats[org.orgName].newNotInDbCount || 0) + 1;
+              if (!orgStats[org.orgName].newNotInDbTenders) orgStats[org.orgName].newNotInDbTenders = [];
+              orgStats[org.orgName].newNotInDbTenders.push({
+                sourceTenderId: res.summary.sourceTenderId,
+                title: res.summary.title
+              });
+              allNewNotInDbList.push({
+                organisation: org.orgName,
+                sourceTenderId: res.summary.sourceTenderId,
+                title: res.summary.title
+              });
+
+              console.log(`\n================================================================================`);
+              console.log(`🆕 [NEW TENDER ON PORTAL (NOT IN DB)]:`);
+              console.log(`   🆔 Tender ID:       ${res.summary.sourceTenderId}`);
+              console.log(`   📝 Title:           "${(res.summary.title || '').substring(0, 75)}..."`);
+              console.log(`   🏛️ Organisation:    ${org.orgName}`);
+              console.log(`   📊 Total New on Portal: ${totalNotFoundInDb} (In this Org: ${orgStats[org.orgName].newNotInDbCount})`);
+              console.log(`================================================================================\n`);
               continue;
             }
 
@@ -585,11 +606,13 @@ async function runAudit() {
 
             console.log(`\n================================================================================`);
             console.log(`📊 [LIVE PROGRESS AFTER TENDER #${totalAudited}]`);
-            console.log(`   📌 TOTAL REVIEWED:    ${totalAudited} / ${TOTAL_DB_TENDERS} tenders (${pctReviewed}%)`);
-            console.log(`   ✅ TOTAL MATCHED:     ${totalPerfectMatches} (${pctMatched}%)`);
-            console.log(`   ❌ TOTAL MISMATCHED:  ${totalMismatchedTenders} (${pctMismatched}%)`);
-            console.log(`   🏛️ THIS ORG:         "${org.orgName}"`);
-            console.log(`      • Reviewed in Org: ${orgStats[org.orgName].totalAudited} | Matched: ${orgStats[org.orgName].perfectMatches} | Mismatched: ${orgStats[org.orgName].mismatches}`);
+            console.log(`   📌 TOTAL REVIEWED:        ${totalAudited} / ${TOTAL_DB_TENDERS} tenders (${pctReviewed}%)`);
+            console.log(`   ✅ TOTAL MATCHED:         ${totalPerfectMatches} (${pctMatched}%)`);
+            console.log(`   ❌ TOTAL MISMATCHED:      ${totalMismatchedTenders} (${pctMismatched}%)`);
+            console.log(`   🆕 NEW ON PORTAL (NO DB): ${totalNotFoundInDb} new tenders found`);
+            console.log(`   🏛️ THIS ORG:             "${org.orgName}"`);
+            console.log(`      • Reviewed in Org:     ${orgStats[org.orgName].totalAudited} | Matched: ${orgStats[org.orgName].perfectMatches} | Mismatched: ${orgStats[org.orgName].mismatches}`);
+            console.log(`      • New in this Org:     ${orgStats[org.orgName].newNotInDbCount || 0} (not yet in DB)`);
             console.log(`================================================================================\n`);
           }
         }
@@ -622,7 +645,8 @@ async function runAudit() {
         totalMismatchedTenders,
         totalNotFoundInDb,
         orgStats,
-        allMismatchesList
+        allMismatchesList,
+        allNewNotInDbList
       };
       saveCheckpoint(lastCheckpointState);
 
@@ -645,6 +669,7 @@ async function runAudit() {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const jsonReportPath = path.join(REPORTS_DIR, `audit_report_${timestamp}.json`);
     const csvReportPath = path.join(REPORTS_DIR, `audit_mismatches_${timestamp}.csv`);
+    const newTendersCsvPath = path.join(REPORTS_DIR, `audit_new_tenders_${timestamp}.csv`);
 
     const finalReport = {
       auditTimestamp: new Date().toISOString(),
@@ -656,7 +681,8 @@ async function runAudit() {
       totalNotFoundInDb,
       perfectMatchPercentage: totalAudited > 0 ? (Math.round((totalPerfectMatches / totalAudited) * 10000) / 100) : 0,
       orgStats,
-      allMismatchesList
+      allMismatchesList,
+      allNewNotInDbList
     };
 
     fs.writeFileSync(jsonReportPath, JSON.stringify(finalReport, null, 2), 'utf-8');
@@ -671,6 +697,14 @@ async function runAudit() {
     });
     fs.writeFileSync(csvReportPath, csvContent, 'utf-8');
 
+    // Export new tenders not in DB to CSV
+    let newCsvContent = 'Organisation,Tender ID,Title\n';
+    allNewNotInDbList.forEach(item => {
+      const cleanTitle = String(item.title || '').replace(/"/g, '""');
+      newCsvContent += `"${item.organisation}","${item.sourceTenderId}","${cleanTitle}"\n`;
+    });
+    fs.writeFileSync(newTendersCsvPath, newCsvContent, 'utf-8');
+
     clearCheckpoint();
 
     // ------------------------------------------------------------------
@@ -684,24 +718,35 @@ async function runAudit() {
     console.log(`📋 Total Tenders Audited:        ${totalAudited}`);
     console.log(`✅ 100% Perfect Matches:          ${totalPerfectMatches} (${finalReport.perfectMatchPercentage}%)`);
     console.log(`❌ Total Tenders with Mismatches: ${totalMismatchedTenders}`);
-    console.log(`⏩ Tenders Not Found in DB:      ${totalNotFoundInDb}`);
+    console.log(`🆕 New on Portal (Not in DB):    ${totalNotFoundInDb}`);
     console.log(`================================================================================`);
-    console.log(`🏢 MISMATCH BREAKDOWN BY ORGANISATION:`);
+    console.log(`🏢 BREAKDOWN BY ORGANISATION:`);
     console.log(`================================================================================`);
 
     let orgIndex = 1;
     for (const [orgName, data] of Object.entries(orgStats)) {
-      if (data.totalAudited === 0) continue;
+      if (data.totalAudited === 0 && (!data.newNotInDbCount || data.newNotInDbCount === 0)) continue;
       const statusIcon = data.mismatches === 0 ? '✅' : '❌';
       console.log(`\n${orgIndex}. ${orgName}:`);
       console.log(`   Audited: ${data.totalAudited} | Perfect: ${data.perfectMatches} | Mismatches: ${data.mismatches} ${statusIcon}`);
+      console.log(`   New on Portal (Not in DB): ${data.newNotInDbCount || 0}`);
       
-      if (data.mismatches > 0 && data.mismatchedTenders.length > 0) {
-        console.log(`   Mismatched Tender IDs:`);
+      if (data.mismatches > 0 && data.mismatchedTenders && data.mismatchedTenders.length > 0) {
+        console.log(`   ❌ Mismatched Tender IDs:`);
         data.mismatchedTenders.forEach(t => {
           const fieldNames = t.mismatches.map(m => m.field).join(', ');
           console.log(`     • ${t.sourceTenderId} (Mismatches: ${fieldNames})`);
         });
+      }
+
+      if (data.newNotInDbCount > 0 && data.newNotInDbTenders && data.newNotInDbTenders.length > 0) {
+        console.log(`   🆕 New Tenders (Not in DB):`);
+        data.newNotInDbTenders.slice(0, 10).forEach(t => {
+          console.log(`     • ${t.sourceTenderId} - "${(t.title || '').substring(0, 60)}..."`);
+        });
+        if (data.newNotInDbTenders.length > 10) {
+          console.log(`     • ... and ${data.newNotInDbTenders.length - 10} more`);
+        }
       }
       orgIndex++;
     }
@@ -709,7 +754,8 @@ async function runAudit() {
     console.log(`\n================================================================================`);
     console.log(`💾 REPORTS EXPORTED SUCCESSFULLY:`);
     console.log(`   • Detailed JSON Report: ${jsonReportPath}`);
-    console.log(`   • CSV Discrepancies:    ${csvReportPath}`);
+    console.log(`   • CSV Mismatches:       ${csvReportPath}`);
+    console.log(`   • CSV New Tenders:      ${newTendersCsvPath}`);
     console.log(`================================================================================\n`);
 
   } catch (criticalErr) {
